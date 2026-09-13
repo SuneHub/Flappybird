@@ -62,7 +62,7 @@
   canvas{display:block;border-radius:10px;background:#70c5ce;cursor:pointer;touch-action:none}
 
   footer{
-    display:flex;gap:18px;justify-content:center;align-items:center;flex-wrap:wrap;
+    display:flex;gap:14px;justify-content:center;align-items:center;flex-wrap:wrap;
     padding:8px 12px 14px;color:#8fa4cf;font-size:12.5px;
     animation:dropIn .7s .15s both;
   }
@@ -88,7 +88,7 @@
     </svg>
     <div>
       <h1>SUNE FLAPPY BIRD</h1>
-      <p>canvas 2d &middot; html5 edition</p>
+      <p>htm15 by canvas hehe</p>
     </div>
   </div>
   <div class="chip" id="bestWrap">BEST <b id="bestChip">0</b></div>
@@ -100,9 +100,10 @@
 
 <footer>
   <span><kbd>SPACE</kbd> / <kbd>TAP</kbd> to fly</span>
+  <span><kbd>1</kbd>–<kbd>4</kbd> pick mode</span>
   <span><kbd>P</kbd> pause</span>
   <span><kbd>M</kbd> mute</span>
-  <span><kbd>R</kbd> restart</span>
+  <span><kbd>R</kbd> menu</span>
 </footer>
 
 <script>
@@ -113,27 +114,48 @@ const GW = 480, GH = 720;
 const GROUND_H = 96, GROUND_Y = GH - GROUND_H;
 const GRAVITY = 1500, FLAP_V = -430, MAX_FALL = 700;
 const BIRD_X = 138, PIPE_W = 74, PIPE_SPACING = 248;
-const State = { READY:0, PLAY:1, DYING:2, OVER:3 };
+const State = { READY:0, PLAY:1, DYING:2, OVER:3, WIN:4 };
+const LBL = ['NORMAL','HARD','CHALLENGE','CLASSIC'];
+const SUB = ['ramp up','narrow + fast','100 pipes','original flat'];
+const JOKE = 'htm15 by canvas hehe';
+const PLAY_BTN = { x:GW/2-70, y:640, w:140, h:50 };
+const PA_BTN   = { x:GW/2-105, y:374, w:210, h:54 };
+const PAUSE_BTN = { x:GW/2-26, y:8, w:52, h:52 };
+const PM_RESUME = { x:GW/2-110, y:GH/2-30, w:220, h:52 };
+const PM_LOBBY  = { x:GW/2-110, y:GH/2+34, w:220, h:52 };
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 let renderScale = 1;
 
-function loadBest(){ try{ return +localStorage.getItem('flappy_best')||0 }catch(e){ return 0 } }
-function saveBest(v){ try{ localStorage.setItem('flappy_best', v) }catch(e){} }
+const BKEYS = ['flappy_best_n','flappy_best_h','flappy_best_c','flappy_best_cl'];
+function loadBest(m){ try{ return +localStorage.getItem(BKEYS[m])||0 }catch(e){ return 0 } }
+function saveBest(m,v){ try{ localStorage.setItem(BKEYS[m], v) }catch(e){} }
+let bests = [loadBest(0), loadBest(1), loadBest(2), loadBest(3)];
+let king = (()=>{ try{ return localStorage.getItem('flappy_king')==='1' }catch(e){ return false } })();
 let muted = (()=>{ try{ return localStorage.getItem('flappy_mute')==='1' }catch(e){ return false } })();
 
-let state = State.READY, score = 0, best = loadBest(), newBest = false;
+let state = State.READY, score = 0, mode = 0, selMode = 0, best = bests[0], newBest = false;
 let pipes = [], parts = [];
 let worldX = 0, paused = false, flashA = 0, shakeT = 0, shakeMag = 0;
 let overT = 0, readyT = 0, scorePop = 0, nightCur = 0, tNow = 0, dieSnd = false;
+let pipeCount = 0, playT = 0, winT = 0;
+let canPlay = true;
 
 const bird = { x:BIRD_X, y:GH*0.44, vy:0, r:14, rot:0, wingT:0, wingFrame:1, blinkT:2, dead:false };
 
 const clouds = []; for(let i=0;i<6;i++) clouds.push({x:Math.random()*GW, y:40+Math.random()*160, s:.6+Math.random()*.9, v:6+Math.random()*10});
 const stars  = []; for(let i=0;i<42;i++) stars.push({x:Math.random()*GW, y:Math.random()*300, r:.8+Math.random()*1.6, p:Math.random()*TAU});
 
-/* ---------------- sound (Web Audio, no files needed) ---------------- */
+const MB = [];
+(function(){
+  const bw=200, bh=54, gx=16, gy=8;
+  const x0=(GW-(bw*2+gx))/2;
+  const pos=[[x0,452],[x0+bw+gx,452],[x0,452+bh+gy],[x0+bw+gx,452+bh+gy]];
+  for(let i=0;i<4;i++) MB.push({x:pos[i][0],y:pos[i][1],w:bw,h:bh,i});
+})();
+
+/* ---------------- sound ---------------- */
 const Snd = {
   ac:null, master:null,
   ensure(){
@@ -171,10 +193,11 @@ const Snd = {
   point(){ this.osc('sine',987,987,.09,.3); this.osc('sine',1318,1318,.12,.3,.09); },
   hit(){ this.noise(.16,.5,'lowpass',900,120); this.osc('square',180,55,.18,.25); },
   die(){ this.osc('sawtooth',640,110,.5,.22); },
-  swoosh(){ this.noise(.25,.25,'lowpass',1600,200); }
+  swoosh(){ this.noise(.25,.25,'lowpass',1600,200); },
+  win(){ [523,659,784,1047].forEach((f,i)=>this.osc('square',f,f,.14,.22,i*.11)); this.osc('sine',1568,1568,.5,.28,.46); }
 };
 
-/* ---------------- drawing helpers ---------------- */
+/* ---------------- helpers ---------------- */
 function rr(x,y,w,h,r){
   ctx.beginPath();
   ctx.moveTo(x+r,y);
@@ -203,6 +226,7 @@ function circleRect(cx,cy,r,rx,ry,rw,rh){
   const nx=Math.max(rx,Math.min(cx,rx+rw)), ny=Math.max(ry,Math.min(cy,ry+rh));
   const dx=cx-nx, dy=cy-ny; return dx*dx+dy*dy < r*r;
 }
+function inRect(p,r){ return p.x>=r.x&&p.x<=r.x+r.w&&p.y>=r.y&&p.y<=r.y+r.h; }
 function medalFor(s){
   if(s>=45) return {n:'DIAMOND', c:'#7de3f0', c2:'#d9f8ff'};
   if(s>=30) return {n:'GOLD', c:'#ffd23f', c2:'#ffe9a2'};
@@ -211,7 +235,7 @@ function medalFor(s){
   return null;
 }
 
-/* ---------------- particles / fx ---------------- */
+/* ---------------- particles ---------------- */
 function puff(x,y,n,cols,spd=120,life=.7,g=400){
   for(let i=0;i<n;i++){
     const a=Math.random()*TAU, v=spd*(.4+Math.random()*.8);
@@ -221,22 +245,50 @@ function puff(x,y,n,cols,spd=120,life=.7,g=400){
 }
 function txtPart(x,y,t){ parts.push({x,y,vx:0,vy:-60,life:.8,max:.8,txt:t}); }
 
-/* ---------------- game logic ---------------- */
-const speed = () => 158 + Math.min(score,45)*1.3;
-const gapH  = () => Math.max(138, 172 - Math.min(score,32)*1.05);
+/* ---------------- difficulty per mode ---------------- */
+function spacing(){
+  if(mode===1) return 240;
+  if(mode===3) return 240;
+  return PIPE_SPACING;
+}
+function speed(){
+  if(mode===1) return 180 + Math.min(score,40)*1.5;
+  if(mode===2) return 150 + Math.min(score,100)*0.3;
+  if(mode===3) return 165;
+  return 158 + Math.min(score,45)*1.0;
+}
+function gapFor(idx){
+  if(mode===1) return Math.max(125, 150 - Math.min(idx-1,30));
+  if(mode===2) return 34 + 140*Math.pow(1-Math.min(idx,100)/100, 1.2);
+  if(mode===3) return 145;
+  return Math.max(145, 172 - Math.min(idx-1,32)*1.05);
+}
 
 function spawnPipes(){
   while(pipes.length===0 || pipes[pipes.length-1].x < GW+80){
+    if(mode===2 && pipeCount>=100) break;
     const lastX = pipes.length ? pipes[pipes.length-1].x : GW+120;
-    const g = gapH(), minY = 76, maxY = GROUND_Y-76-g;
-    pipes.push({ x:lastX+(pipes.length?PIPE_SPACING:0), gapY:minY+Math.random()*(maxY-minY), gapH:g, scored:false });
+    pipeCount++;
+    const g = gapFor(pipeCount), minY = 76, maxY = GROUND_Y-76-g;
+    pipes.push({ x:lastX+(pipes.length?spacing():0), gapY:minY+Math.random()*(maxY-minY), gapH:g, scored:false, idx:pipeCount });
   }
 }
 function reset(){
   state=State.READY; score=0; newBest=false; pipes=[]; parts.length=0;
   bird.y=GH*0.44; bird.vy=0; bird.rot=0; bird.dead=false;
-  readyT=0; overT=0; flashA=0; shakeT=0; paused=false;
+  bird.x=BIRD_X;
+  readyT=0; overT=0; winT=0; playT=0; pipeCount=0; flashA=0; shakeT=0; paused=false;
 }
+function selectMode(i){
+  selMode=i; best=bests[i]; canPlay=true; updateBestChip();
+}
+function startWith(m){
+  mode=m; selMode=m; best=bests[m]; updateBestChip();
+  state=State.PLAY; pipeCount=0; playT=0; spawnPipes();
+  bird.vy=FLAP_V; Snd.flap(); wingAnim(.2,16);
+  puff(bird.x-10,bird.y+6,3,['#ffe9a2','#ffd23f','#fff'],60,.5,100);
+}
+function replay(){ Snd.swoosh(); reset(); startWith(selMode); }
 function die(){
   if(state!==State.PLAY) return;
   state=State.DYING; bird.vy=-220; bird.dead=true;
@@ -244,25 +296,35 @@ function die(){
   Snd.hit();
   puff(bird.x,bird.y,14,['#ffd23f','#ff9f43','#fff','#f5a623'],180,.9);
 }
+function winGame(){
+  state=State.WIN; winT=0;
+  newBest = score>bests[mode];
+  if(newBest){ bests[mode]=score; best=score; saveBest(mode,score); updateBestChip(); }
+  king=true; try{ localStorage.setItem('flappy_king','1'); }catch(e){}
+  Snd.win();
+  puff(GW/2,240,80,['#ffd23f','#ff6b4a','#7ac74f','#6cc7ff','#fff'],300,1.6,350);
+  puff(bird.x,bird.y,30,['#ffd23f','#fff','#ff9f43'],220,1.2,300);
+}
+function winAdvance(){
+  if(winT<0.6){ winT=0.6; return; }
+  if(winT<5.2){ const b=[2.0,3.6,5.2]; for(const x of b){ if(winT<x){ winT=x; return; } } return; }
+  if(winT>5.7){ Snd.swoosh(); reset(); }
+}
 function wingAnim(dt,rate){ bird.wingT+=dt*rate; bird.wingFrame=[0,1,2,1][Math.floor(bird.wingT)%4]; }
 function updateBestChip(){
-  const el=document.getElementById('bestChip'); el.textContent=best;
+  const el=document.getElementById('bestChip'); el.textContent=bests[selMode];
   const w=document.getElementById('bestWrap');
   w.classList.remove('bump'); void w.offsetWidth; w.classList.add('bump');
 }
 
 function inputFlap(){
   Snd.ensure();
-  if(state===State.READY){
-    state=State.PLAY; spawnPipes();
-    bird.vy=FLAP_V; Snd.flap(); wingAnim(.2,16);
-    puff(bird.x-10,bird.y+6,3,['#ffe9a2','#ffd23f','#fff'],60,.5,100);
-    return;
-  }
+  if(state===State.READY){ return; }
   if(state===State.PLAY){
     bird.vy=FLAP_V; Snd.flap(); bird.wingT=0;
     puff(bird.x-10,bird.y+6,3,['#ffe9a2','#ffd23f','#fff'],60,.5,100);
   } else if(state===State.OVER && overT>0.6){ Snd.swoosh(); reset(); }
+  else if(state===State.WIN){ winAdvance(); }
 }
 function toggleMute(){
   Snd.ensure();
@@ -289,6 +351,7 @@ function update(dt){
     worldX+=70*dt;
   }
   else if(state===State.PLAY){
+    playT+=dt;
     const sp=speed();
     worldX+=sp*dt;
     bird.vy=Math.min(bird.vy+GRAVITY*dt,MAX_FALL);
@@ -306,14 +369,17 @@ function update(dt){
       if(!p.scored && p.x+PIPE_W < bird.x-bird.r){
         p.scored=true; score++; scorePop=1;
         Snd.point(); txtPart(bird.x+30,bird.y-26,'+1');
+        if(mode===2 && p.idx===100){ winGame(); break; }
         if(score%10===0) puff(GW/2,130,16,['#ffd23f','#fff','#7ac74f','#ff6b4a'],220,.9,300);
       }
     }
-    if(bird.y+bird.r>=GROUND_Y){ bird.y=GROUND_Y-bird.r; die(); }
-    else for(const p of pipes){
-      if(p.x>bird.x+60 || p.x+PIPE_W<bird.x-60) continue;
-      if(circleRect(bird.x,bird.y,bird.r, p.x,-999,PIPE_W,p.gapY+999) ||
-         circleRect(bird.x,bird.y,bird.r, p.x,p.gapY+p.gapH,PIPE_W,GROUND_Y-(p.gapY+p.gapH))){ die(); break; }
+    if(state===State.PLAY){
+      if(bird.y+bird.r>=GROUND_Y){ bird.y=GROUND_Y-bird.r; die(); }
+      else for(const p of pipes){
+        if(p.x>bird.x+60 || p.x+PIPE_W<bird.x-60) continue;
+        if(circleRect(bird.x,bird.y,bird.r, p.x,-999,PIPE_W,p.gapY+999) ||
+           circleRect(bird.x,bird.y,bird.r, p.x,p.gapY+p.gapH,PIPE_W,GROUND_Y-(p.gapY+p.gapH))){ die(); break; }
+      }
     }
   }
   else if(state===State.DYING){
@@ -324,13 +390,22 @@ function update(dt){
     if(bird.y+bird.r>=GROUND_Y){
       bird.y=GROUND_Y-bird.r;
       state=State.OVER; overT=0;
-      newBest=score>best;
-      if(newBest){ best=score; saveBest(best); updateBestChip(); }
+      newBest=score>bests[mode];
+      if(newBest){ bests[mode]=score; best=score; saveBest(mode,score); updateBestChip(); }
       Snd.swoosh();
       puff(bird.x,GROUND_Y,10,['#d9c07f','#c4a865'],140,.6);
     }
   }
   else if(state===State.OVER){ overT+=dt; }
+  else if(state===State.WIN){
+    winT+=dt;
+    worldX+=120*dt;
+    bird.x+=(GW/2-bird.x)*Math.min(1,dt*3);
+    bird.y+=(GH*0.44-bird.y)*Math.min(1,dt*3);
+    bird.rot+=(0-bird.rot)*Math.min(1,dt*4);
+    bird.vy=0;
+    wingAnim(dt,12);
+  }
 
   for(let i=parts.length-1;i>=0;i--){
     const p=parts[i]; p.life-=dt;
@@ -412,35 +487,36 @@ function drawBackdrop(){
   for(const c of clouds) drawCloud(c);
   bumps(worldX*0.90,GROUND_Y,24,'#63bf43',1.6);
 }
-function pipeGrad(x,w){
+function pipeGrad(x,w,gold){
   const g=ctx.createLinearGradient(x,0,x+w,0);
-  g.addColorStop(0,'#4f9e2b'); g.addColorStop(.18,'#8ed05a');
-  g.addColorStop(.5,'#6abf3f'); g.addColorStop(1,'#3c7d1e');
+  if(gold){ g.addColorStop(0,'#b8860b'); g.addColorStop(.18,'#ffe08a'); g.addColorStop(.5,'#ffc93c'); g.addColorStop(1,'#8a6508'); }
+  else { g.addColorStop(0,'#4f9e2b'); g.addColorStop(.18,'#8ed05a'); g.addColorStop(.5,'#6abf3f'); g.addColorStop(1,'#3c7d1e'); }
   ctx.fillStyle=g;
 }
-function drawPipeHalf(x,y,h,dir){
+function drawPipeHalf(x,y,h,dir,gold){
   if(h<=0) return;
   const capH=26, capX=x-5, capW=PIPE_W+10;
   let bodyY,bodyH,capY;
   if(dir==='down'){ capY=y+h-capH; bodyY=y; bodyH=h-capH; }
   else { capY=y; bodyY=y+capH; bodyH=h-capH; }
-  ctx.lineWidth=3; ctx.strokeStyle='#2e5a17';
+  ctx.lineWidth=3; ctx.strokeStyle= gold ? '#6b4c05' : '#2e5a17';
   if(bodyH>0){
-    pipeGrad(x,PIPE_W);
+    pipeGrad(x,PIPE_W,gold);
     ctx.fillRect(x,bodyY,PIPE_W,bodyH);
     ctx.strokeRect(x+1.5,bodyY-2,PIPE_W-3,bodyH+4);
     ctx.fillStyle='rgba(255,255,255,.22)';
     ctx.fillRect(x+8,bodyY,10,bodyH);
   }
-  pipeGrad(capX,capW);
+  pipeGrad(capX,capW,gold);
   rr(capX,capY,capW,capH,4); ctx.fill(); ctx.stroke();
   ctx.fillStyle='rgba(255,255,255,.25)';
   ctx.fillRect(capX+6,capY+4,8,capH-8);
 }
 function drawPipes(){
   for(const p of pipes){
-    drawPipeHalf(p.x,-6,p.gapY+6,'down');
-    drawPipeHalf(p.x,p.gapY+p.gapH,GROUND_Y-(p.gapY+p.gapH),'up');
+    const gold = (mode===2 && p.idx===100);
+    drawPipeHalf(p.x,-6,p.gapY+6,'down',gold);
+    drawPipeHalf(p.x,p.gapY+p.gapH,GROUND_Y-(p.gapY+p.gapH),'up',gold);
   }
 }
 function drawGround(){
@@ -533,6 +609,22 @@ function chevron(x,y){
   ctx.strokeStyle='#fff';
   ctx.beginPath(); ctx.moveTo(x-10,y+5); ctx.lineTo(x,y-5); ctx.lineTo(x+10,y+5); ctx.stroke();
 }
+function drawKingBadge(cx,cy,r){
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,TAU);
+  ctx.fillStyle='#101010'; ctx.fill();
+  ctx.lineWidth=Math.max(3,r*0.12); ctx.strokeStyle='#d21f1f'; ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx,cy,r*0.78,0,TAU);
+  ctx.lineWidth=2; ctx.strokeStyle='rgba(210,31,31,.55)'; ctx.stroke();
+  const s=r/46;
+  ctx.translate(cx,cy); ctx.scale(s,s);
+  ctx.beginPath();
+  ctx.moveTo(-16,10); ctx.lineTo(-16,-4); ctx.lineTo(-8,2); ctx.lineTo(0,-10); ctx.lineTo(8,2); ctx.lineTo(16,-4); ctx.lineTo(16,10); ctx.closePath();
+  ctx.fillStyle='#d21f1f'; ctx.fill();
+  ctx.lineWidth=4; ctx.strokeStyle='#101010'; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(-18,14); ctx.lineTo(18,-14); ctx.stroke();
+  ctx.restore();
+}
 function drawPanel(){
   const t=Math.min(1,overT/0.5), e=easeOutBack(t);
   ctx.fillStyle=`rgba(5,10,26,${(0.5*t).toFixed(3)})`;
@@ -562,10 +654,11 @@ function drawPanel(){
   }
 
   const rx=px+pw-28;
+  const scoreTxt = mode===2 ? score+'/100' : String(score);
   ctx.textAlign='right'; ctx.textBaseline='middle';
   ctx.font='24px "VT323"'; ctx.fillStyle='#a56a2a';
-  ctx.fillText('SCORE',rx,py+100);
-  textOutline(String(score),rx,py+130,'26px "Press Start 2P"','#fff','#54340f',6);
+  ctx.fillText(mode===2?'PIPES':'SCORE',rx,py+100);
+  textOutline(scoreTxt,rx,py+130,'26px "Press Start 2P"','#fff','#54340f',6);
   ctx.textAlign='right'; ctx.font='24px "VT323"'; ctx.fillStyle='#a56a2a';
   ctx.fillText('BEST',rx,py+176);
   textOutline(String(best),rx,py+206,'26px "Press Start 2P"','#fff','#54340f',6);
@@ -579,49 +672,146 @@ function drawPanel(){
     ctx.restore();
   }
 
-  const bw2=210, bh=54, bx=(GW-bw2)/2, by=py+ph-78;
   const pulse = overT>0.6 ? 1+0.035*Math.sin(overT*6) : 1;
-  ctx.save(); ctx.translate(GW/2,by+bh/2); ctx.scale(pulse,pulse);
-  rr(-bw2/2,-bh/2,bw2,bh,10); ctx.fillStyle='#6fce4e'; ctx.fill();
+  ctx.save(); ctx.translate(GW/2,PA_BTN.y+PA_BTN.h/2); ctx.scale(pulse,pulse);
+  rr(-PA_BTN.w/2,-PA_BTN.h/2,PA_BTN.w,PA_BTN.h,10); ctx.fillStyle='#6fce4e'; ctx.fill();
   ctx.lineWidth=4; ctx.strokeStyle='#2e5a17'; ctx.stroke();
   ctx.fillStyle='rgba(255,255,255,.28)';
-  rr(-bw2/2+4,-bh/2+4,bw2-8,bh/2-6,7); ctx.fill();
+  rr(-PA_BTN.w/2+4,-PA_BTN.h/2+4,PA_BTN.w-8,PA_BTN.h/2-6,7); ctx.fill();
   textOutline('PLAY AGAIN',0,2,'34px "VT323"','#fff','#1e4212',6);
   ctx.restore();
   ctx.globalAlpha=.5+.5*Math.sin(overT*4);
-  textOutline('tap or SPACE',GW/2,by+bh+22,'20px "VT323"','#dfe9ff',null,0);
+  textOutline('tap = replay · elsewhere = menu',GW/2,PA_BTN.y+PA_BTN.h+22,'20px "VT323"','#dfe9ff',null,0);
   ctx.globalAlpha=1;
+}
+function drawWin(){
+  const seq=[
+    [0.6,2.0,'DAMM','96px "VT323"'],
+    [2.0,3.6,'Take a screenshot, haha','40px "VT323"'],
+    [3.6,5.2,'You win, good luck','44px "VT323"']
+  ];
+  for(const q of seq){
+    if(winT>=q[0]&&winT<q[1]){
+      const t=(winT-q[0])/(q[1]-q[0]);
+      const al=t<0.15?t/0.15:(t>0.85?(1-t)/0.15:1);
+      ctx.globalAlpha=Math.max(0,al);
+      textOutline(q[2],GW/2,GH*0.30,q[3],'#fff','rgba(0,0,0,.75)',10);
+      ctx.globalAlpha=1;
+    }
+  }
+  if(winT>=5.2){
+    const t=Math.min(1,(winT-5.2)/0.5), e=easeOutBack(t);
+    ctx.fillStyle=`rgba(5,10,26,${(0.6*t).toFixed(3)})`;
+    ctx.fillRect(0,0,GW,GH);
+    const pw=360, ph=310, px=(GW-pw)/2;
+    const py=165+(1-e)*(GH-165);
+    ctx.fillStyle='rgba(0,0,0,.4)'; rr(px+6,py+8,pw,ph,16); ctx.fill();
+    rr(px,py,pw,ph,16); ctx.fillStyle='#150a0a'; ctx.fill();
+    ctx.lineWidth=5; ctx.strokeStyle='#d21f1f'; ctx.stroke();
+    rr(px+8,py+8,pw-16,ph-16,10); ctx.lineWidth=2; ctx.strokeStyle='rgba(210,31,31,.45)'; ctx.stroke();
+    drawKingBadge(GW/2,py+92,46);
+    textOutline('KING WITHOUT A CROWN',GW/2,py+172,'30px "VT323"','#ff4444','#000',7);
+    textOutline('challenge cleared — badge earned',GW/2,py+206,'22px "VT323"','#ffd9d9',null,0);
+    ctx.globalAlpha=.5+.5*Math.sin(winT*5);
+    textOutline('tap or SPACE',GW/2,py+258,'24px "VT323"','#dfe9ff',null,0);
+    ctx.globalAlpha=1;
+  }
+}
+function drawPauseMenu(){
+  ctx.fillStyle='rgba(5,10,26,.62)'; ctx.fillRect(0,0,GW,GH);
+  const pw=280, ph=250, px=(GW-pw)/2, py=GH/2-ph/2;
+  ctx.fillStyle='rgba(0,0,0,.35)'; rr(px+5,py+6,pw,ph,14); ctx.fill();
+  rr(px,py,pw,ph,14); ctx.fillStyle='#182036'; ctx.fill();
+  ctx.lineWidth=4; ctx.strokeStyle='#ffd23f'; ctx.stroke();
+  textOutline('PAUSED',GW/2,py+48,'44px "VT323"','#ffd23f','rgba(0,0,0,.7)',8);
+  rr(PM_RESUME.x,PM_RESUME.y,PM_RESUME.w,PM_RESUME.h,10);
+  ctx.fillStyle='#6fce4e'; ctx.fill(); ctx.lineWidth=3; ctx.strokeStyle='#2e5a17'; ctx.stroke();
+  ctx.fillStyle='rgba(255,255,255,.25)';
+  rr(PM_RESUME.x+4,PM_RESUME.y+4,PM_RESUME.w-8,PM_RESUME.h/2-6,7); ctx.fill();
+  textOutline('RESUME',GW/2,PM_RESUME.y+PM_RESUME.h/2+1,'30px "VT323"','#fff','#1e4212',5);
+  rr(PM_LOBBY.x,PM_LOBBY.y,PM_LOBBY.w,PM_LOBBY.h,10);
+  ctx.fillStyle='#b03a2e'; ctx.fill(); ctx.lineWidth=3; ctx.strokeStyle='#641e16'; ctx.stroke();
+  ctx.fillStyle='rgba(255,255,255,.18)';
+  rr(PM_LOBBY.x+4,PM_LOBBY.y+4,PM_LOBBY.w-8,PM_LOBBY.h/2-6,7); ctx.fill();
+  textOutline('BACK TO LOBBY',GW/2,PM_LOBBY.y+PM_LOBBY.h/2+1,'30px "VT323"','#fff','#4a120b',5);
 }
 function drawUI(){
   if(state===State.READY){
-    const ty=140+Math.sin(readyT*2)*5;
+    const ty=120+Math.sin(readyT*2)*5;
     textOutline('SUNE',GW/2,ty,'44px "VT323"','#ff8a3d','rgba(30,20,10,.6)',8);
     textOutline('FLAPPY BIRD',GW/2,ty+56,'68px "VT323"','#ffd23f','#3d2b00',10);
-    textOutline(' html5 by canvas hehe',GW/2,ty+96,'26px "VT323"','#ffffff','rgba(30,40,20,.55)',6);
+    textOutline(JOKE,GW/2,ty+96,'26px "VT323"','#ffffff','rgba(30,40,20,.55)',6);
     for(let i=0;i<3;i++){
       const tt=(readyT*0.9+i/3)%1;
       ctx.globalAlpha=(tt<0.5?tt*2:(1-tt)*2)*0.9;
       chevron(bird.x,bird.y-30-tt*36);
     }
     ctx.globalAlpha=1;
+    for(const b of MB){
+      const sel = b.i===selMode;
+      rr(b.x,b.y,b.w,b.h,10);
+      ctx.fillStyle = sel ? 'rgba(255,210,63,.18)' : 'rgba(10,20,40,.35)';
+      ctx.fill();
+      ctx.lineWidth = sel?3.5:2;
+      ctx.strokeStyle = sel ? '#ffd23f' : 'rgba(255,255,255,.4)';
+      ctx.stroke();
+      textOutline(LBL[b.i], b.x+b.w/2, b.y+22, '26px "VT323"', sel?'#ffd23f':'#fff', 'rgba(0,0,0,.55)', 5);
+      textOutline(SUB[b.i], b.x+b.w/2, b.y+42, '16px "VT323"', sel?'#ffe9a2':'rgba(255,255,255,.75)', null, 0);
+    }
+    const pu = 1+0.04*Math.sin(readyT*5);
+    ctx.save(); ctx.translate(PLAY_BTN.x+PLAY_BTN.w/2, PLAY_BTN.y+PLAY_BTN.h/2); ctx.scale(pu,pu);
+    rr(-PLAY_BTN.w/2,-PLAY_BTN.h/2,PLAY_BTN.w,PLAY_BTN.h,12);
+    ctx.fillStyle='#4CAF50'; ctx.fill();
+    ctx.lineWidth=3; ctx.strokeStyle='#2E7D32'; ctx.stroke();
+    ctx.fillStyle='rgba(255,255,255,.25)';
+    rr(-PLAY_BTN.w/2+4,-PLAY_BTN.h/2+4,PLAY_BTN.w-8,PLAY_BTN.h/2-6,8); ctx.fill();
+    textOutline('PLAY',0,2,'30px "VT323"','#fff','rgba(0,0,0,.45)',5);
+    ctx.restore();
     ctx.globalAlpha=.55+.45*Math.sin(readyT*4.5);
-    textOutline('TAP or SPACE to fly',GW/2,452,'30px "VT323"','#fff','rgba(20,40,30,.6)',6);
+    textOutline('pick a mode, then hit PLAY',GW/2,592,'26px "VT323"','#fff','rgba(20,40,30,.6)',6);
     ctx.globalAlpha=1;
-    if(best>0) textOutline('BEST: '+best,GW/2,492,'24px "VT323"','#ffe9a2','rgba(0,0,0,.45)',5);
+    if(bests[selMode]>0) textOutline('BEST ('+LBL[selMode]+'): '+bests[selMode],GW/2,616,'22px "VT323"','#ffe9a2','rgba(0,0,0,.45)',4);
+    if(king){
+      drawKingBadge(30,36,15);
+      textOutline('KING WITHOUT A CROWN',52,36,'18px "VT323"','#ff4444','rgba(0,0,0,.6)',4,'left');
+    }
   }
   if(state===State.PLAY||state===State.DYING){
     const pop=1+scorePop*0.3;
     ctx.save(); ctx.translate(GW/2,86); ctx.scale(pop,pop);
     textOutline(String(score),0,0,'32px "Press Start 2P"','#fff','rgba(25,35,25,.85)',8);
     ctx.restore();
+    if(mode===1) textOutline('HARD',52,34,'22px "VT323"','#ff6b4a','rgba(0,0,0,.5)',4);
+    if(mode===2){
+      textOutline('CHALLENGE',66,34,'22px "VT323"','#ffd23f','rgba(0,0,0,.5)',4);
+      textOutline(score+'/100',GW/2,132,'30px "VT323"','#fff','rgba(0,0,0,.6)',6);
+      if(playT<3){
+        const a = playT<2.4 ? 1 : (3-playT)/0.6;
+        ctx.globalAlpha=Math.max(0,a);
+        textOutline('Win to get exclusive prizes',GW/2,290,'34px "VT323"','#ffd23f','#3d2b00',8);
+        textOutline('HAHA',GW/2,334,'40px "VT323"','#ff8a3d','rgba(0,0,0,.6)',8);
+        ctx.globalAlpha=1;
+      }
+    }
+    if(mode===3) textOutline('CLASSIC',60,34,'22px "VT323"','#7ac74f','rgba(0,0,0,.5)',4);
+  }
+  if(state===State.PLAY && !paused){
+    const cx=GW/2, cy=PAUSE_BTN.y+PAUSE_BTN.h/2, r=PAUSE_BTN.w/2-2;
+    ctx.save();
+    ctx.shadowColor='rgba(0,0,0,.35)'; ctx.shadowBlur=10; ctx.shadowOffsetY=3;
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,TAU);
+    ctx.fillStyle='rgba(13,20,40,.55)'; ctx.fill();
+    ctx.restore();
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,TAU);
+    ctx.lineWidth=2.5; ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.stroke();
+    ctx.lineCap='round'; ctx.lineWidth=6; ctx.strokeStyle='#fff';
+    ctx.beginPath(); ctx.moveTo(cx-7,cy-9); ctx.lineTo(cx-7,cy+9); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx+7,cy-9); ctx.lineTo(cx+7,cy+9); ctx.stroke();
   }
   drawSoundIcon();
-  if(paused){
-    ctx.fillStyle='rgba(5,10,26,.62)'; ctx.fillRect(0,0,GW,GH);
-    textOutline('PAUSED',GW/2,GH*0.4,'64px "VT323"','#ffd23f','rgba(0,0,0,.6)',8);
-    textOutline('press P or tap to resume',GW/2,GH*0.4+52,'24px "VT323"','#dfe9ff',null,0);
-  }
+  if(paused) drawPauseMenu();
   if(state===State.OVER) drawPanel();
+  if(state===State.WIN) drawWin();
 }
 function draw(){
   const s=renderScale;
@@ -647,7 +837,18 @@ canvas.addEventListener('pointerdown',e=>{
   e.preventDefault();
   const p=toGame(e);
   if(Math.hypot(p.x-(GW-34),p.y-34)<28){ toggleMute(); return; }
-  if(paused){ paused=false; return; }
+  if(paused){
+    if(inRect(p,PM_RESUME)){ paused=false; return; }
+    if(inRect(p,PM_LOBBY)){ paused=false; Snd.swoosh(); reset(); return; }
+    return;
+  }
+  if(state===State.READY){
+    for(const b of MB){ if(inRect(p,b)){ Snd.ensure(); selectMode(b.i); return; } }
+    if(inRect(p,PLAY_BTN)){ if(canPlay){ Snd.ensure(); startWith(selMode); } return; }
+    return;
+  }
+  if(state===State.OVER && overT>0.6 && inRect(p,PA_BTN)){ replay(); return; }
+  if(state===State.PLAY && inRect(p,PAUSE_BTN)){ paused=true; return; }
   inputFlap();
 });
 canvas.addEventListener('contextmenu',e=>e.preventDefault());
@@ -656,12 +857,21 @@ window.addEventListener('keydown',e=>{
   if(e.code==='Space'||e.code==='ArrowUp'||e.code==='KeyW'){
     e.preventDefault();
     if(paused){ paused=false; return; }
+    if(state===State.READY){ if(canPlay){ Snd.ensure(); startWith(selMode); } return; }
     inputFlap();
   }
+  else if(e.code==='Digit1'&&state===State.READY){ Snd.ensure(); selectMode(0); }
+  else if(e.code==='Digit2'&&state===State.READY){ Snd.ensure(); selectMode(1); }
+  else if(e.code==='Digit3'&&state===State.READY){ Snd.ensure(); selectMode(2); }
+  else if(e.code==='Digit4'&&state===State.READY){ Snd.ensure(); selectMode(3); }
   else if(e.code==='KeyP'){ if(state===State.PLAY) paused=!paused; }
   else if(e.code==='KeyM'){ toggleMute(); }
   else if(e.code==='KeyR'){ if(state!==State.READY){ Snd.ensure(); Snd.swoosh(); reset(); } }
-  else if(e.code==='Enter' && state===State.OVER && overT>0.6){ Snd.swoosh(); reset(); }
+  else if(e.code==='Enter'){
+    if(state===State.READY){ if(canPlay){ Snd.ensure(); startWith(selMode); } }
+    else if(state===State.OVER&&overT>0.6){ Snd.swoosh(); reset(); }
+    else if(state===State.WIN){ winAdvance(); }
+  }
 });
 document.addEventListener('visibilitychange',()=>{ if(document.hidden && state===State.PLAY) paused=true; });
 
@@ -685,7 +895,7 @@ for(let i=0;i<90;i++){
   document.body.appendChild(s);
 }
 
-document.getElementById('bestChip').textContent=best;
+document.getElementById('bestChip').textContent=bests[selMode];
 if(document.fonts){ document.fonts.load('32px "Press Start 2P"'); document.fonts.load('68px "VT323"'); }
 
 resize();
